@@ -1,3 +1,4 @@
+
 import "dotenv/config";
 import http from "node:http";
 import express from "express";
@@ -106,8 +107,6 @@ app.post("/api/chat", async (req, res) => {
 
 // --------------------------------------------------
 // AUDIO CONVERSION: 24 kHz TO 16 kHz
-// Gemini outputs 24 kHz PCM.
-// Plivo stream is configured for 16 kHz PCM.
 // --------------------------------------------------
 
 function resamplePcm16(base64Audio, fromRate = 24000, toRate = 16000) {
@@ -186,7 +185,11 @@ wss.on("connection", (ws) => {
         }
 
         // Handle caller interruption
-        if (content.interrupted && streamId && ws.readyState === WebSocket.OPEN) {
+        if (
+          content.interrupted &&
+          streamId &&
+          ws.readyState === WebSocket.OPEN
+        ) {
           ws.send(
             JSON.stringify({
               event: "clearAudio",
@@ -201,7 +204,11 @@ wss.on("connection", (ws) => {
         for (const part of parts) {
           const audioData = part.inlineData?.data;
 
-          if (!audioData || sessionClosed || ws.readyState !== WebSocket.OPEN) {
+          if (
+            !audioData ||
+            sessionClosed ||
+            ws.readyState !== WebSocket.OPEN
+          ) {
             continue;
           }
 
@@ -275,23 +282,44 @@ wss.on("connection", (ws) => {
         console.log("Stream ID:", streamId);
         console.log("Audio format:", event.start?.mediaFormat);
 
+        // Wait until Gemini session is ready
         const session = await livePromise;
 
-        if (sessionClosed || ws.readyState !== WebSocket.OPEN || greetingSent) {
+        if (
+          sessionClosed ||
+          ws.readyState !== WebSocket.OPEN ||
+          greetingSent
+        ) {
           return;
         }
 
         liveSession = session;
+
+        // Prevent duplicate greetings for this call
         greetingSent = true;
 
-        console.log("Sending initial greeting to Gemini...");
+        console.log("Sending VOBPL opening greeting...");
+
+        // Ask Gemini to speak the exact greeting
+        // defined in LIVE_CONFIG system instructions.
         session.sendClientContent({
           turns: [
             {
               role: "user",
               parts: [
                 {
-                  text: "A caller has connected. Greet them politely as an AI assistant and ask how you can help.",
+                  text: `
+A new phone call has just connected.
+
+Immediately speak your exact opening greeting specified
+in your system instructions.
+
+Do not explain anything before the greeting.
+Do not create a different greeting.
+Do not wait for the caller to speak.
+
+After greeting the caller, wait for their response.
+                  `,
                 },
               ],
             },
