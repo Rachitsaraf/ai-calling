@@ -47,6 +47,7 @@ const isVihaan = AGENT_PERSONA === "VIHAAN";
 
 const agentName = isVihaan ? "विहान" : "काव्या";
 const voiceName = isVihaan ? "Puck" : "Aoede";
+const telegramBotUsername = process.env.TELEGRAM_BOT_USERNAME || "";
 
 const greeting = isVihaan
   ? "नमस्ते! व्यंकटेश ऑक्साइड्स एंड बैटरीज़ प्राइवेट लिमिटेड में आपका स्वागत है। मैं विहान, VOBPL का AI असिस्टेंट हूँ। बताइए, मैं कैसे मदद करूँ?"
@@ -55,6 +56,18 @@ const greeting = isVihaan
 // Gemini Live configuration
 export const LIVE_CONFIG = {
   responseModalities: ["AUDIO"],
+
+  tools: [
+    {
+      functionDeclarations: [
+        {
+          name: "send_company_brochure_telegram",
+          description:
+            "Send the official VOBPL company brochure to the current caller's linked Telegram account. Call this only when the caller clearly asks to receive the brochure on Telegram.",
+        },
+      ],
+    },
+  ],
 
   systemInstruction: {
     parts: [
@@ -116,6 +129,22 @@ CALLING INSTRUCTIONS:
     callback, quote, or order unless that action actually happened.
 
 15. Do not disclose confidential internal company information.
+
+16. If the caller clearly asks you to send the company brochure on
+    Telegram, use the send_company_brochure_telegram function. Never say
+    it was sent unless the function confirms status "sent".
+
+17. If the function says "needs_linking", explain that the caller must
+    open ${telegramBotUsername ? `@${telegramBotUsername}` : "VOBPL's Telegram bot"},
+    tap Start, and share their own phone number. Ask them to tell you
+    once they have done that, then retry sending the brochure.
+
+18. If the function reports that Telegram is not configured or the
+    caller's number is unavailable, be honest that you cannot send it
+    right now. Do not invent a Telegram username or claim delivery.
+
+19. If sending fails, apologize briefly and say the team can share the
+    brochure another way. Never imply that delivery succeeded.
         `,
       },
     ],

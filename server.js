@@ -11,16 +11,56 @@ import {
 } from "./src/config/gemini.js";
 
 import { chatWithAgent } from "./src/services/aiAgent.js";
+import {
+  handleTelegramUpdate,
+  isValidTelegramWebhookSecret,
+  registerTelegramWebhook,
+  sendCompanyBrochureToCaller,
+} from "./src/services/telegram.js";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json({ limit: "100kb" }));
+app.use(express.urlencoded({ extended: false }));
 app.use(express.static("public"));
+
+app.post("/api/telegram/webhook", async (req, res) => {
+  const secret = req.get("X-Telegram-Bot-Api-Secret-Token");
+
+  if (!isValidTelegramWebhookSecret(secret)) {
+    return res.sendStatus(401);
+  }
+
+  try {
+    await handleTelegramUpdate(req.body);
+    res.sendStatus(200);
+  } catch (error) {
+    console.error("Telegram webhook processing failed:", error);
+    res.status(500).json({
+      success: false,
+      message: "Telegram update could not be processed.",
+    });
+  }
+});
 
 // --------------------------------------------------
 // PLIVO ANSWER URL
 // --------------------------------------------------
+
+function getCallerPhoneNumber(event) {
+  const phoneFromEvent = event.start?.from;
+  if (phoneFromEvent) {
+    return String(phoneFromEvent);
+  }
+
+  const callerHeader = String(event.extra_headers || "")
+    .split(/[;,]/)
+    .map((part) => part.trim())
+    .find((part) => part.startsWith("callerPhone="));
+
+  return callerHeader?.slice("callerPhone=".length) || null;
+}
 
 app.all("/answer", (req, res) => {
   const streamUrl = process.env.PUBLIC_WSS_URL;
@@ -29,9 +69,17 @@ app.all("/answer", (req, res) => {
     return res.status(500).send("PUBLIC_WSS_URL is not configured");
   }
 
+  const callerPhone = String(
+    req.body?.From || req.query?.From || ""
+  ).replace(/\D/g, "");
+  const extraHeaders = callerPhone
+    ? `extraHeaders="callerPhone=${callerPhone}"`
+    : "";
+
   const xml = `
     <Response>
       <Stream
+        ${extraHeaders}
         bidirectional="true"
         keepCallAlive="true"
         contentType="audio/x-l16;rate=16000">
@@ -164,6 +212,7 @@ wss.on("connection", (ws) => {
 
   let liveSession = null;
   let streamId = null;
+  let callerPhoneNumber = null;
   let greetingSent = false;
   let sessionClosed = false;
 
@@ -178,6 +227,66 @@ wss.on("connection", (ws) => {
       },
 
       onmessage: (response) => {
+        const functionCalls = response.toolCall?.functionCalls || [];
+
+        if (functionCalls.length > 0) {
+          const session = liveSession;
+
+          if (!session || sessionClosed) {
+            console.error("Cannot process Telegram request: call session is closed.");
+          } else {
+            void Promise.all(
+              functionCalls.map(async (functionCall) => {
+                if (!functionCall.name || !functionCall.id) {
+                  return null;
+                }
+
+                if (functionCall.name !== "send_company_brochure_telegram") {
+                  return {
+                    id: functionCall.id,
+                    name: functionCall.name,
+                    response: { error: "Unsupported function." },
+                  };
+                }
+
+                try {
+                  const result = await sendCompanyBrochureToCaller(
+                    callerPhoneNumber
+                  );
+
+                  return {
+                    id: functionCall.id,
+                    name: functionCall.name,
+                    response: { output: result },
+                  };
+                } catch (error) {
+                  console.error("Telegram brochure delivery failed:", error);
+                  return {
+                    id: functionCall.id,
+                    name: functionCall.name,
+                    response: {
+                      output: {
+                        status: "send_failed",
+                      },
+                    },
+                  };
+                }
+              })
+            )
+              .then((functionResponses) => {
+                const validResponses = functionResponses.filter(Boolean);
+                if (validResponses.length > 0 && !sessionClosed) {
+                  session.sendToolResponse({
+                    functionResponses: validResponses,
+                  });
+                }
+              })
+              .catch((error) => {
+                console.error("Gemini tool response failed:", error);
+              });
+          }
+        }
+
         const content = response.serverContent;
 
         if (!content) {
@@ -278,6 +387,7 @@ wss.on("connection", (ws) => {
         console.log("Plivo call started");
 
         streamId = event.start?.streamId;
+        callerPhoneNumber = getCallerPhoneNumber(event);
 
         console.log("Stream ID:", streamId);
         console.log("Audio format:", event.start?.mediaFormat);
@@ -398,4 +508,17 @@ After greeting the caller, wait for their response.
 server.listen(PORT, () => {
   console.log(`Server running at http://localhost:${PORT}`);
   console.log(`Gemini Live model: ${LIVE_MODEL}`);
+
+  if (process.env.TELEGRAM_BOT_TOKEN) {
+    const baseUrl =
+      process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_BASE_URL;
+
+    void registerTelegramWebhook(baseUrl)
+      .then(() => {
+        console.log("Telegram webhook registered.");
+      })
+      .catch((error) => {
+        console.error("Telegram webhook registration failed:", error);
+      });
+  }
 });
